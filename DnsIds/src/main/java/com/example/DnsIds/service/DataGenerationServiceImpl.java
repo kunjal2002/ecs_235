@@ -25,13 +25,33 @@ public class DataGenerationServiceImpl implements DataGenerationService {
     private static final int FLOODING_THRESHOLD = 50;
 
     @Override
-    public List<DnsQueryEntity> generateDataset(DnsQueryEntity dnsQuery) {
+    public List<DnsQueryEntity> generateDataset(DnsQueryEntity dnsQuery, Integer queryCount) {
+        // Default to 450 if not specified (maintains backward compatibility)
+        if (queryCount == null || queryCount <= 0) {
+            queryCount = 450;
+        }
 
         List<DnsQueryEntity> queries = new ArrayList<>();
         long timestamp = System.currentTimeMillis() / 1000;
 
+        // Calculate proportions based on original distribution (total: 450)
+        // Original: 200 normal (44.4%), 100 flooding (22.2%), 50 NXDOMAIN (11.1%), 
+        //           70 random subdomain (15.6%), 30 amplification (6.7%)
+        int normalCount = Math.max(1, (int) Math.round(queryCount * 0.444));
+        int floodingCount = Math.max(1, (int) Math.round(queryCount * 0.222));
+        int nxdomainCount = Math.max(1, (int) Math.round(queryCount * 0.111));
+        int randomSubdomainCount = Math.max(1, (int) Math.round(queryCount * 0.156));
+        int amplificationCount = Math.max(1, (int) Math.round(queryCount * 0.067));
+        
+        // Adjust to match exact queryCount if there's a rounding difference
+        int currentTotal = normalCount + floodingCount + nxdomainCount + randomSubdomainCount + amplificationCount;
+        int difference = queryCount - currentTotal;
+        if (difference != 0) {
+            normalCount += difference; // Add/subtract difference to normal traffic
+        }
+
         // 1️⃣ Normal user traffic
-        for (int i = 0; i < 200; i++) {
+        for (int i = 0; i < normalCount; i++) {
             DnsQueryEntity q = new DnsQueryEntity();
             q.setTimestamp(timestamp + i);
             q.setClientIp("192.168.1." + helper.randomInt(10, 50));
@@ -44,9 +64,9 @@ public class DataGenerationServiceImpl implements DataGenerationService {
             queries.add(q);
         }
 
-        // 2️⃣ Flooding attack: 100 queries/sec from same IP
+        // 2️⃣ Flooding attack: queries/sec from same IP
         String attackerIp = "192.168.1.100";
-        for (int i = 0; i < 100; i++) {
+        for (int i = 0; i < floodingCount; i++) {
             DnsQueryEntity q = new DnsQueryEntity();
             q.setTimestamp(timestamp);
             q.setClientIp(attackerIp);
@@ -60,7 +80,7 @@ public class DataGenerationServiceImpl implements DataGenerationService {
         }
 
         // 3️⃣ NXDOMAIN flood: Invalid domains, high error rate
-        for (int i = 0; i < 50; i++) {
+        for (int i = 0; i < nxdomainCount; i++) {
             DnsQueryEntity q = new DnsQueryEntity();
             q.setTimestamp(timestamp);
             q.setClientIp("192.168.1.150");
@@ -77,7 +97,7 @@ public class DataGenerationServiceImpl implements DataGenerationService {
         String[] prefixes = {"api", "data", "user", "cdn", "img", "login", "shop"};
         String targetDomain = "attacksite.com";
 
-        for (int i = 0; i < 70; i++) {
+        for (int i = 0; i < randomSubdomainCount; i++) {
             String randomPrefix = prefixes[new Random().nextInt(prefixes.length)];
             String randomSubdomain = helper.randomString(6); // random part
             String fullQuery = randomPrefix + "." + randomSubdomain + "." + targetDomain;
@@ -96,7 +116,7 @@ public class DataGenerationServiceImpl implements DataGenerationService {
 
 
         // 5️⃣ Amplification flood: Large payloads / TCP fallback
-        for (int i = 0; i < 30; i++) {
+        for (int i = 0; i < amplificationCount; i++) {
             DnsQueryEntity q = new DnsQueryEntity();
             q.setTimestamp(timestamp);
             q.setClientIp("192.168.1.250");

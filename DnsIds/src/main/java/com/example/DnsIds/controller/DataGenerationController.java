@@ -1,6 +1,5 @@
 package com.example.DnsIds.controller;
 
-import com.example.DnsIds.dto.AttackResponse;
 import com.example.DnsIds.entity.DnsQueryEntity;
 import com.example.DnsIds.service.DataGenerationService;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -20,8 +19,8 @@ public class DataGenerationController {
     @PostMapping("/generate")
     public  ResponseEntity<?> detectFlooding(
             @RequestParam(defaultValue = "100") int queryCount) {
-        List<DnsQueryEntity> queries = dataGenerationService.generateDataset(null);
-        return ResponseEntity.ok("Dataset generated successfully");
+        List<DnsQueryEntity> queries = dataGenerationService.generateDataset(null, queryCount);
+        return ResponseEntity.ok("Dataset generated successfully with " + queries.size() + " queries");
     }
 }
 

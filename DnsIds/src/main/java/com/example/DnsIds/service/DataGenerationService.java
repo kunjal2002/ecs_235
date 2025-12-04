@@ -7,7 +7,7 @@ import java.util.List;
 
 public interface DataGenerationService {
     
-    List<DnsQueryEntity> generateDataset(DnsQueryEntity dnsQuery);
+    List<DnsQueryEntity> generateDataset(DnsQueryEntity dnsQuery, Integer queryCount);
 
 }
 
