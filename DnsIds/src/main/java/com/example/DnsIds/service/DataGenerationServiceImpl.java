@@ -125,6 +125,7 @@ public class DataGenerationServiceImpl implements DataGenerationService {
 
 
         // 5️⃣ Amplification flood: Large payloads / ANY queries / TCP fallback
+        // Ensure we generate enough to meet thresholds: 20+ large queries, 10+ ANY, 15+ TCP
         for (int i = 0; i < amplificationCount; i++) {
             DnsQueryEntity q = new DnsQueryEntity();
             q.setTimestamp(timestamp);
@@ -132,19 +133,22 @@ public class DataGenerationServiceImpl implements DataGenerationService {
             q.setClientPort(helper.randomPort());
             q.setQueryName("largepayload." + helper.randomDomain());
             
-            // Mix of ANY and TXT queries for amplification
-            q.setQueryType(i % 3 == 0 ? "ANY" : "TXT"); // 33% ANY, 67% TXT
+            // Ensure enough ANY queries (need 10+ for threshold)
+            // First 40% are ANY queries to ensure threshold is met
+            q.setQueryType(i < amplificationCount * 0.4 ? "ANY" : "TXT");
             q.setResponseCode(0);
             q.setAnswerCount(helper.randomInt(3, 8));
             q.setRawLength(helper.randomSize(600, 1500)); // Large responses >512 bytes
             q.setQuerySize(helper.randomSize(40, 60)); // Small query size for high amplification
             
-            // Some use TCP fallback (when UDP response is too large)
-            q.setProtocol(i % 4 == 0 ? "TCP" : "UDP"); // 25% TCP, 75% UDP
+            // Ensure enough TCP queries (need 15+ for threshold)
+            // First 60% use TCP to ensure threshold is met
+            q.setProtocol(i < amplificationCount * 0.6 ? "TCP" : "UDP");
             queries.add(q);
         }
 
         // 6️⃣ DNS Data Exfiltration / Tunneling: Long subdomains, Base64 encoding, high entropy
+        // Ensure we generate enough unique subdomains (need 40+) and TXT queries (need 15+ or 40%+)
         String exfilDomain = "exfil-c2server.com";
         for (int i = 0; i < exfiltrationCount; i++) {
             DnsQueryEntity q = new DnsQueryEntity();
@@ -152,29 +156,32 @@ public class DataGenerationServiceImpl implements DataGenerationService {
             q.setClientIp("192.168.1.220");
             q.setClientPort(helper.randomPort());
             
-            // Create different exfiltration patterns
+            // Create different exfiltration patterns with unique subdomains
+            // Use unique identifiers to ensure each subdomain is different (meets 40+ unique threshold)
             String queryName;
+            String uniqueId = String.valueOf(i) + helper.randomString(8); // Ensure uniqueness
             if (i % 3 == 0) {
                 // Pattern 1: Long Base64-like encoded subdomain (simulates data encoding)
-                String encodedData = helper.randomString(helper.randomInt(55, 80)); // 55-80 chars (exceeds 50 threshold)
+                String encodedData = uniqueId + helper.randomString(helper.randomInt(45, 70)); // 55-80 chars total (exceeds 50 threshold)
                 queryName = encodedData + "." + exfilDomain;
             } else if (i % 3 == 1) {
                 // Pattern 2: Multiple fragments (simulates data fragmentation)
-                String fragment1 = helper.randomString(helper.randomInt(12, 20));
+                String fragment1 = uniqueId + helper.randomString(helper.randomInt(8, 15));
                 String fragment2 = helper.randomString(helper.randomInt(12, 20));
                 String fragment3 = helper.randomString(helper.randomInt(12, 20));
                 queryName = fragment1 + "." + fragment2 + "." + fragment3 + "." + exfilDomain;
             } else {
                 // Pattern 3: High entropy subdomain (random-looking)
-                String highEntropySubdomain = helper.randomString(helper.randomInt(40, 65));
+                String highEntropySubdomain = uniqueId + helper.randomString(helper.randomInt(35, 60));
                 queryName = highEntropySubdomain + ".data." + exfilDomain;
             }
             
             q.setQueryName(queryName);
-            // Mix of TXT (for payload) and A queries
-            q.setQueryType(i % 2 == 0 ? "TXT" : "A"); // 50% TXT queries for data exfiltration
+            // Ensure enough TXT queries (need 15+ or 40%+ ratio)
+            // First 50% are TXT to ensure threshold is met
+            q.setQueryType(i < exfiltrationCount * 0.5 ? "TXT" : "A");
             q.setResponseCode(0);
-            q.setAnswerCount(i % 2 == 0 ? helper.randomInt(2, 5) : 1);
+            q.setAnswerCount(i < exfiltrationCount * 0.5 ? helper.randomInt(2, 5) : 1);
             q.setRawLength(helper.randomSize(100, 400));
             q.setQuerySize(helper.randomSize(60, 120)); // Larger query size due to long subdomains
             q.setProtocol("UDP");

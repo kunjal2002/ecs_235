@@ -34,6 +34,19 @@ public class AnalysisServiceImpl implements AnalysisService{
     private static final int TCP_FALLBACK_THRESHOLD = 15; // Too many TCP queries (UDP overflow)
     private static final int LARGE_QUERY_COUNT_THRESHOLD = 20; // Large queries from single IP
     private static final double LARGE_RESPONSE_RATIO = 0.5; // 50% of queries have large responses
+    
+    // Adaptive thresholds for smaller datasets
+    private int getAdaptiveLargeQueryThreshold(int totalQueries) {
+        return Math.min(LARGE_QUERY_COUNT_THRESHOLD, Math.max(5, totalQueries / 5)); // At least 5, or 20% of queries
+    }
+    
+    private int getAdaptiveAnyQueryThreshold(int totalQueries) {
+        return Math.min(ANY_QUERY_THRESHOLD, Math.max(3, totalQueries / 10)); // At least 3, or 10% of queries
+    }
+    
+    private int getAdaptiveTcpThreshold(int totalQueries) {
+        return Math.min(TCP_FALLBACK_THRESHOLD, Math.max(5, totalQueries / 7)); // At least 5, or ~14% of queries
+    }
 
     // DNS Data Exfiltration / Tunneling thresholds
     private static final int SUBDOMAIN_LENGTH_THRESHOLD = 50; // Suspicious subdomain length
@@ -42,6 +55,15 @@ public class AnalysisServiceImpl implements AnalysisService{
     private static final double TXT_QUERY_RATIO = 0.4; // 40% TXT queries is suspicious
     private static final int UNIQUE_SUBDOMAIN_EXFIL_THRESHOLD = 40; // Unique subdomains per domain
     private static final int BASE64_MIN_LENGTH = 20; // Minimum length to check Base64
+    
+    // Adaptive thresholds for smaller datasets
+    private int getAdaptiveTxtThreshold(int totalQueries) {
+        return Math.min(TXT_QUERY_THRESHOLD, Math.max(3, totalQueries / 7)); // At least 3, or ~14% of queries
+    }
+    
+    private int getAdaptiveUniqueSubdomainThreshold(int totalQueries) {
+        return Math.min(UNIQUE_SUBDOMAIN_EXFIL_THRESHOLD, Math.max(5, totalQueries / 2)); // At least 5, or 50% of queries
+    }
 
     @Override
     public List<AttackResponse> analyzeAllQueries() {
@@ -546,9 +568,14 @@ public class AnalysisServiceImpl implements AnalysisService{
             // DETECTION LOGIC - Flag if ANY of these conditions are met:
             boolean isAmplificationAttack = false;
             List<String> detectedPatterns = new ArrayList<>();
+            
+            // Use adaptive thresholds based on dataset size
+            int adaptiveLargeThreshold = getAdaptiveLargeQueryThreshold(ipQueries.size());
+            int adaptiveAnyThreshold = getAdaptiveAnyQueryThreshold(ipQueries.size());
+            int adaptiveTcpThreshold = getAdaptiveTcpThreshold(ipQueries.size());
 
             // Condition 1: Large responses (>512 bytes) from single IP
-            if (largeResponseCount >= LARGE_QUERY_COUNT_THRESHOLD ||
+            if (largeResponseCount >= adaptiveLargeThreshold ||
                     largeResponseRatio >= LARGE_RESPONSE_RATIO) {
                 isAmplificationAttack = true;
                 detectedPatterns.add(String.format("Large responses: %d queries (%.1f%%) exceed 512 bytes",
@@ -556,21 +583,21 @@ public class AnalysisServiceImpl implements AnalysisService{
             }
 
             // Condition 2: Too many ANY queries
-            if (anyQueryCount >= ANY_QUERY_THRESHOLD || anyQueryRatio >= ANY_QUERY_RATIO) {
+            if (anyQueryCount >= adaptiveAnyThreshold || anyQueryRatio >= ANY_QUERY_RATIO) {
                 isAmplificationAttack = true;
                 detectedPatterns.add(String.format("Suspicious ANY queries: %d queries (%.1f%% of total)",
                         anyQueryCount, anyQueryRatio * 100));
             }
 
             // Condition 3: High TCP usage (indicates UDP responses too large)
-            if (tcpQueryCount >= TCP_FALLBACK_THRESHOLD) {
+            if (tcpQueryCount >= adaptiveTcpThreshold) {
                 isAmplificationAttack = true;
                 detectedPatterns.add(String.format("TCP fallback pattern: %d TCP queries (%.1f%%) - indicates large UDP responses",
                         tcpQueryCount, tcpRatio * 100));
             }
 
             // Condition 4: Single IP generating many large queries
-            if (largeQueries.size() >= LARGE_QUERY_COUNT_THRESHOLD && avgAmplificationRatio > 5.0) {
+            if (largeQueries.size() >= adaptiveLargeThreshold && avgAmplificationRatio > 5.0) {
                 isAmplificationAttack = true;
                 detectedPatterns.add(String.format("High amplification from single IP: %d large queries with avg %.1fx amplification",
                         largeQueries.size(), avgAmplificationRatio));
@@ -737,6 +764,7 @@ public class AnalysisServiceImpl implements AnalysisService{
             String mostSuspiciousDomain = "";
 
             // Check Pattern 1 & 4: Suspicious subdomains
+            // This should trigger if ANY queries have long subdomains, high entropy, or look encoded
             if (!suspiciousSubdomains.isEmpty()) {
                 hasExfiltrationPattern = true;
 
@@ -758,11 +786,12 @@ public class AnalysisServiceImpl implements AnalysisService{
             }
 
             // Check Pattern 2: Many unique subdomains per domain (tunneling behavior)
+            int adaptiveUniqueThreshold = getAdaptiveUniqueSubdomainThreshold(ipQueries.size());
             for (Map.Entry<String, List<String>> domainEntry : domainToSubdomains.entrySet()) {
                 String baseDomain = domainEntry.getKey();
                 long uniqueSubdomains = domainEntry.getValue().stream().distinct().count();
 
-                if (uniqueSubdomains >= UNIQUE_SUBDOMAIN_EXFIL_THRESHOLD) {
+                if (uniqueSubdomains >= adaptiveUniqueThreshold) {
                     hasExfiltrationPattern = true;
                     detectedPatterns.add(String.format(
                             "Data tunneling pattern: %d unique subdomains to '%s' (indicates data fragmentation)",
@@ -771,7 +800,8 @@ public class AnalysisServiceImpl implements AnalysisService{
             }
 
             // Check Pattern 3: TXT query abuse
-            if (txtQueryCount >= TXT_QUERY_THRESHOLD || txtQueryRatio >= TXT_QUERY_RATIO) {
+            int adaptiveTxtThreshold = getAdaptiveTxtThreshold(ipQueries.size());
+            if (txtQueryCount >= adaptiveTxtThreshold || txtQueryRatio >= TXT_QUERY_RATIO) {
                 hasExfiltrationPattern = true;
                 detectedPatterns.add(String.format(
                         "TXT query abuse: %d TXT queries (%.1f%% of total) - TXT records can carry arbitrary payloads",

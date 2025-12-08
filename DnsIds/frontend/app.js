@@ -83,6 +83,13 @@ function App() {
             }
             
             const data = await response.json();
+            console.log('Analysis response:', data);
+            console.log('Number of attack responses:', Array.isArray(data) ? data.length : 1);
+            if (Array.isArray(data) && data.length > 0) {
+                const allThreats = data.flatMap(result => result.threats || []);
+                console.log('Total threats detected:', allThreats.length);
+                console.log('Threat types:', allThreats.map(t => t.type));
+            }
             setAnalysisResults(Array.isArray(data) ? data : [data]);
             if (data.length === 0 || (data[0] && data[0].queriesAnalyzed === 0)) {
                 setSuccessMessage('ℹ️ No data found. Click "Generate Dataset" first to create DNS queries.');
@@ -129,6 +136,13 @@ function App() {
             }
             
             const data = await analysisResponse.json();
+            console.log('Generate & Analyze response:', data);
+            console.log('Number of attack responses:', Array.isArray(data) ? data.length : 1);
+            if (Array.isArray(data) && data.length > 0) {
+                const allThreats = data.flatMap(result => result.threats || []);
+                console.log('Total threats detected:', allThreats.length);
+                console.log('Threat types:', allThreats.map(t => t.type));
+            }
             setAnalysisResults(Array.isArray(data) ? data : [data]);
             setSuccessMessage(`✅ Generated ${queryCount} DNS queries and completed analysis!`);
         } catch (err) {
@@ -164,6 +178,8 @@ function App() {
         if (type.includes('RANDOM_SUBDOMAIN')) return 'fa-random';
         if (type.includes('NXDOMAIN')) return 'fa-exclamation-triangle';
         if (type.includes('FLOODING')) return 'fa-wave-square';
+        if (type.includes('AMPLIFICATION')) return 'fa-broadcast-tower';
+        if (type.includes('EXFILTRATION') || type.includes('TUNNELING')) return 'fa-file-export';
         return 'fa-shield-alt';
     };
 
@@ -311,7 +327,11 @@ function AttackResponseCard({ result, getSeverityColor, getRiskColor, formatTime
                 <div>
                     <div className="attack-type">
                         <i className="fas fa-bug"></i>
-                        {result.attackType || 'Attack Detected'}
+                        {result.attackType 
+                            ? result.attackType.replace(/_/g, ' ').split(' ').map(word => 
+                                word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
+                              ).join(' ')
+                            : 'Attack Detected'}
                     </div>
                     <div className="attack-meta">
                         <span>
@@ -360,10 +380,18 @@ function AttackResponseCard({ result, getSeverityColor, getRiskColor, formatTime
                 <div className="recommendations">
                     <h3>
                         <i className="fas fa-lightbulb"></i>
-                        Recommendations
+                        Security Recommendations
                     </h3>
                     <div className="recommendations-content">
-                        {result.recommendation}
+                        {result.recommendation.split('\n').map((line, idx) => {
+                            // Check if line starts with a number (numbered list item)
+                            const isNumberedItem = /^\d+\./.test(line.trim());
+                            return (
+                                <p key={idx} className={isNumberedItem ? 'recommendation-item' : ''}>
+                                    {line.trim() || '\u00A0'}
+                                </p>
+                            );
+                        })}
                     </div>
                 </div>
             )}
@@ -373,26 +401,49 @@ function AttackResponseCard({ result, getSeverityColor, getRiskColor, formatTime
 
 // Threat Card Component
 function ThreatCard({ threat, getRiskColor, formatTimestamp, getThreatIcon }) {
+    // Format threat type for display
+    const formatThreatType = (type) => {
+        return type
+            .replace(/_/g, ' ')
+            .replace(/\bDNS\b/g, 'DNS')
+            .replace(/\bNXDOMAIN\b/g, 'NXDOMAIN')
+            .split(' ')
+            .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+            .join(' ');
+    };
+
     return (
-        <div className={`threat-card ${threat.type}`}>
+        <div className={`threat-card ${threat.type} ${getRiskColor(threat.riskScore)}`}>
             <div className="threat-header">
                 <div className="threat-type">
                     <i className={`fas ${getThreatIcon(threat.type)}`}></i>
-                    {threat.type.replace(/_/g, ' ')}
+                    {formatThreatType(threat.type)}
                 </div>
-                <div className="threat-risk">
-                    Risk: {threat.riskScore}
+                <div className={`threat-risk risk-${getRiskColor(threat.riskScore)}`}>
+                    <span>Risk Score: {threat.riskScore}</span>
+                    <div className="threat-risk-bar">
+                        <div 
+                            className={`threat-risk-fill ${getRiskColor(threat.riskScore)}`}
+                            style={{ width: `${threat.riskScore}%` }}
+                        ></div>
+                    </div>
                 </div>
             </div>
             <div className="threat-description">
-                {threat.description}
+                {threat.description.split('\n').map((line, idx) => (
+                    <p key={idx} style={{ margin: idx > 0 ? '0.5rem 0' : '0' }}>
+                        {line}
+                    </p>
+                ))}
             </div>
             <div className="threat-source">
                 <i className="fas fa-network-wired"></i>
                 <strong>Source IP:</strong> {threat.sourceIp}
-                <span style={{ marginLeft: '1rem' }}>
-                    <i className="fas fa-clock"></i> {formatTimestamp(threat.timestamp)}
-                </span>
+                {threat.timestamp && (
+                    <span style={{ marginLeft: '1rem' }}>
+                        <i className="fas fa-clock"></i> {formatTimestamp(threat.timestamp)}
+                    </span>
+                )}
             </div>
         </div>
     );
