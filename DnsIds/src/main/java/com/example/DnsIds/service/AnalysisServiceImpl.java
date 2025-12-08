@@ -35,6 +35,14 @@ public class AnalysisServiceImpl implements AnalysisService{
     private static final int LARGE_QUERY_COUNT_THRESHOLD = 20; // Large queries from single IP
     private static final double LARGE_RESPONSE_RATIO = 0.5; // 50% of queries have large responses
 
+    // DNS Data Exfiltration / Tunneling thresholds
+    private static final int SUBDOMAIN_LENGTH_THRESHOLD = 50; // Suspicious subdomain length
+    private static final double ENTROPY_THRESHOLD = 4.5; // High entropy indicates randomness
+    private static final int TXT_QUERY_THRESHOLD = 15; // Too many TXT queries
+    private static final double TXT_QUERY_RATIO = 0.4; // 40% TXT queries is suspicious
+    private static final int UNIQUE_SUBDOMAIN_EXFIL_THRESHOLD = 40; // Unique subdomains per domain
+    private static final int BASE64_MIN_LENGTH = 20; // Minimum length to check Base64
+
     @Override
     public List<AttackResponse> analyzeAllQueries() {
         long startTime = System.currentTimeMillis();
@@ -54,25 +62,27 @@ public class AnalysisServiceImpl implements AnalysisService{
                     .build());
         }
 
-        // Detect all FOUR types of attacks
+        // Detect all FIVE types of attacks
         List<ThreatAlert> floodingThreats = detectFlooding(getAllQueries);
         List<ThreatAlert> nxdomainThreats = detectNXDomainFlood(getAllQueries);
         List<ThreatAlert> subdomainThreats = detectRandomSubdomainAttack(getAllQueries);
-        List<ThreatAlert> amplificationThreats = detectAmplificationAttack(getAllQueries); // NEW
+        List<ThreatAlert> amplificationThreats = detectAmplificationAttack(getAllQueries);
+        List<ThreatAlert> exfiltrationThreats = detectDataExfiltration(getAllQueries); // NEW
 
         // Combine all threats
         List<ThreatAlert> allThreats = new ArrayList<>();
         allThreats.addAll(floodingThreats);
         allThreats.addAll(nxdomainThreats);
         allThreats.addAll(subdomainThreats);
-        allThreats.addAll(amplificationThreats); // NEW
+        allThreats.addAll(amplificationThreats);
+        allThreats.addAll(exfiltrationThreats); // NEW
 
         // Sort by risk score
         allThreats.sort((t1, t2) -> Integer.compare(t2.getRiskScore(), t1.getRiskScore()));
 
         long endTime = System.currentTimeMillis();
 
-        String attackType = determineAttackType(floodingThreats, nxdomainThreats, subdomainThreats, amplificationThreats);
+        String attackType = determineAttackType(floodingThreats, nxdomainThreats, subdomainThreats, amplificationThreats, exfiltrationThreats);
 
         return List.of(AttackResponse.builder()
                 .attackType(attackType)
@@ -90,18 +100,21 @@ public class AnalysisServiceImpl implements AnalysisService{
     private String determineAttackType(List<ThreatAlert> floodingThreats,
                                        List<ThreatAlert> nxdomainThreats,
                                        List<ThreatAlert> subdomainThreats,
-                                       List<ThreatAlert> amplificationThreats) { // NEW PARAMETER
+                                       List<ThreatAlert> amplificationThreats,
+                                       List<ThreatAlert> exfiltrationThreats) { // NEW PARAMETER
         int attackCount = 0;
         if (!floodingThreats.isEmpty()) attackCount++;
         if (!nxdomainThreats.isEmpty()) attackCount++;
         if (!subdomainThreats.isEmpty()) attackCount++;
-        if (!amplificationThreats.isEmpty()) attackCount++; // NEW
+        if (!amplificationThreats.isEmpty()) attackCount++;
+        if (!exfiltrationThreats.isEmpty()) attackCount++; // NEW
 
         if (attackCount > 1) return "MULTIPLE_ATTACKS_DETECTED";
         if (!floodingThreats.isEmpty()) return "FLOODING_DETECTED";
         if (!nxdomainThreats.isEmpty()) return "NXDOMAIN_FLOOD_DETECTED";
         if (!subdomainThreats.isEmpty()) return "RANDOM_SUBDOMAIN_ATTACK_DETECTED";
-        if (!amplificationThreats.isEmpty()) return "DNS_AMPLIFICATION_DETECTED"; // NEW
+        if (!amplificationThreats.isEmpty()) return "DNS_AMPLIFICATION_DETECTED";
+        if (!exfiltrationThreats.isEmpty()) return "DNS_DATA_EXFILTRATION_DETECTED"; // NEW
         return "NO_THREATS_DETECTED";
     }
 
@@ -195,9 +208,26 @@ public class AnalysisServiceImpl implements AnalysisService{
                 .anyMatch(t -> "RANDOM_SUBDOMAIN_ATTACK".equals(t.getType()));
         boolean hasAmplification = threats.stream()
                 .anyMatch(t -> "DNS_AMPLIFICATION".equals(t.getType()));
+        boolean hasExfiltration = threats.stream()
+                .anyMatch(t -> "DNS_DATA_EXFILTRATION".equals(t.getType()));
 
         recommendation.append("⚠️ Detected ").append(threats.size())
                 .append(" threat(s). Recommended actions:\n\n");
+
+        // Data Exfiltration recommendations (HIGHEST PRIORITY - DATA THEFT)
+        if (hasExfiltration) {
+            recommendation.append("🔥 DNS DATA EXFILTRATION DETECTED (CRITICAL - Data Theft in Progress):\n");
+            recommendation.append("1. IMMEDIATELY isolate and block the attacking IP from network\n");
+            recommendation.append("2. Block DNS queries to suspicious external domains\n");
+            recommendation.append("3. Implement DNS query length limits (block subdomains >50 chars)\n");
+            recommendation.append("4. Enable entropy-based filtering on DNS firewall\n");
+            recommendation.append("5. Restrict TXT query types unless business-critical\n");
+            recommendation.append("6. Investigate compromised host for malware/backdoors\n");
+            recommendation.append("7. Check what data may have been exfiltrated (logs, traffic analysis)\n");
+            recommendation.append("8. Implement DNS-over-HTTPS (DoH) to prevent tunneling abuse\n");
+            recommendation.append("9. Alert Security Operations Center (SOC) - incident response needed\n");
+            recommendation.append("10. Review firewall rules - data may be leaking through DNS\n\n");
+        }
 
         // Amplification attack recommendations (HIGHEST PRIORITY)
         if (hasAmplification) {
@@ -646,6 +676,279 @@ public class AnalysisServiceImpl implements AnalysisService{
 
         // Extreme max amplification bonus
         if (maxAmplification > 100) score += 5;
+
+        return Math.min(score, 100); // Cap at 100
+    }
+
+    /**
+     * Detects DNS Data Exfiltration / Tunneling
+     * Patterns:
+     * 1. Long or random-looking subdomains (high entropy)
+     * 2. High query frequency to same domain with different subdomains
+     * 3. Repeated TXT queries
+     * 4. Base32/Base64 encoded patterns in subdomains
+     */
+    private List<ThreatAlert> detectDataExfiltration(List<DnsQueryEntity> getAllQueries) {
+        List<ThreatAlert> threats = new ArrayList<>();
+
+        // Group queries by IP
+        Map<String, List<DnsQueryEntity>> queriesByIp = getAllQueries.stream()
+                .collect(Collectors.groupingBy(DnsQueryEntity::getClientIp));
+
+        for (Map.Entry<String, List<DnsQueryEntity>> entry : queriesByIp.entrySet()) {
+            String ip = entry.getKey();
+            List<DnsQueryEntity> ipQueries = entry.getValue();
+
+            // PATTERN 1 & 4: Long subdomains with high entropy / Base64 patterns
+            List<DnsQueryEntity> suspiciousSubdomains = ipQueries.stream()
+                    .filter(q -> q.getQueryName() != null && !q.getQueryName().isEmpty())
+                    .filter(q -> {
+                        String subdomain = extractSubdomain(q.getQueryName());
+                        double entropy = calculateEntropy(subdomain);
+                        boolean isLong = subdomain.length() > SUBDOMAIN_LENGTH_THRESHOLD;
+                        boolean highEntropy = entropy > ENTROPY_THRESHOLD;
+                        boolean looksEncoded = looksLikeBase64(subdomain);
+                        return isLong || highEntropy || looksEncoded;
+                    })
+                    .collect(Collectors.toList());
+
+            // PATTERN 2: High frequency of unique subdomains to same base domain
+            Map<String, List<String>> domainToSubdomains = new HashMap<>();
+            for (DnsQueryEntity query : ipQueries) {
+                if (query.getQueryName() == null || query.getQueryName().isEmpty()) continue;
+                String baseDomain = extractBaseDomain(query.getQueryName());
+                String fullSubdomain = extractSubdomain(query.getQueryName());
+                domainToSubdomains
+                        .computeIfAbsent(baseDomain, k -> new ArrayList<>())
+                        .add(fullSubdomain);
+            }
+
+            // PATTERN 3: Too many TXT queries (used for data exfiltration)
+            long txtQueryCount = ipQueries.stream()
+                    .filter(q -> "TXT".equalsIgnoreCase(q.getQueryType()))
+                    .count();
+            double txtQueryRatio = (double) txtQueryCount / ipQueries.size();
+
+            // Analyze patterns
+            boolean hasExfiltrationPattern = false;
+            List<String> detectedPatterns = new ArrayList<>();
+            double maxEntropy = 0.0;
+            int maxSubdomainLength = 0;
+            String mostSuspiciousDomain = "";
+
+            // Check Pattern 1 & 4: Suspicious subdomains
+            if (!suspiciousSubdomains.isEmpty()) {
+                hasExfiltrationPattern = true;
+
+                for (DnsQueryEntity q : suspiciousSubdomains) {
+                    String subdomain = extractSubdomain(q.getQueryName());
+                    double entropy = calculateEntropy(subdomain);
+                    if (entropy > maxEntropy) {
+                        maxEntropy = entropy;
+                        mostSuspiciousDomain = q.getQueryName();
+                    }
+                    if (subdomain.length() > maxSubdomainLength) {
+                        maxSubdomainLength = subdomain.length();
+                    }
+                }
+
+                detectedPatterns.add(String.format(
+                        "Suspicious subdomains: %d queries with long/high-entropy/encoded subdomains (max length: %d, max entropy: %.2f)",
+                        suspiciousSubdomains.size(), maxSubdomainLength, maxEntropy));
+            }
+
+            // Check Pattern 2: Many unique subdomains per domain (tunneling behavior)
+            for (Map.Entry<String, List<String>> domainEntry : domainToSubdomains.entrySet()) {
+                String baseDomain = domainEntry.getKey();
+                long uniqueSubdomains = domainEntry.getValue().stream().distinct().count();
+
+                if (uniqueSubdomains >= UNIQUE_SUBDOMAIN_EXFIL_THRESHOLD) {
+                    hasExfiltrationPattern = true;
+                    detectedPatterns.add(String.format(
+                            "Data tunneling pattern: %d unique subdomains to '%s' (indicates data fragmentation)",
+                            uniqueSubdomains, baseDomain));
+                }
+            }
+
+            // Check Pattern 3: TXT query abuse
+            if (txtQueryCount >= TXT_QUERY_THRESHOLD || txtQueryRatio >= TXT_QUERY_RATIO) {
+                hasExfiltrationPattern = true;
+                detectedPatterns.add(String.format(
+                        "TXT query abuse: %d TXT queries (%.1f%% of total) - TXT records can carry arbitrary payloads",
+                        txtQueryCount, txtQueryRatio * 100));
+            }
+
+            // If exfiltration pattern detected, create threat alert
+            if (hasExfiltrationPattern) {
+                // Calculate time window
+                long minTimestamp = ipQueries.stream()
+                        .mapToLong(DnsQueryEntity::getTimestamp)
+                        .min()
+                        .orElse(0);
+
+                long maxTimestamp = ipQueries.stream()
+                        .mapToLong(DnsQueryEntity::getTimestamp)
+                        .max()
+                        .orElse(0);
+
+                long timeWindowSec = Math.max(1, maxTimestamp - minTimestamp + 1);
+                double queriesPerSec = (double) ipQueries.size() / timeWindowSec;
+
+                int riskScore = calculateExfiltrationRiskScore(
+                        suspiciousSubdomains.size(),
+                        maxEntropy,
+                        maxSubdomainLength,
+                        txtQueryCount,
+                        domainToSubdomains.values().stream()
+                                .mapToLong(list -> list.stream().distinct().count())
+                                .max()
+                                .orElse(0)
+                );
+
+                // Build description
+                StringBuilder description = new StringBuilder();
+                description.append(String.format("🚨 DNS DATA EXFILTRATION / TUNNELING from %s\n\n", ip));
+                description.append(String.format("Total Queries: %d over %d seconds (%.1f queries/sec)\n\n",
+                        ipQueries.size(), timeWindowSec, queriesPerSec));
+                description.append("Detected Exfiltration Patterns:\n");
+
+                for (int i = 0; i < detectedPatterns.size(); i++) {
+                    description.append(String.format("  %d. %s\n", i + 1, detectedPatterns.get(i)));
+                }
+
+                if (maxEntropy > 0) {
+                    description.append(String.format("\nMost Suspicious Query: %s (entropy: %.2f)\n",
+                            mostSuspiciousDomain, maxEntropy));
+                }
+
+                description.append("\n⚠️ Potential data theft in progress! ");
+                description.append("Attackers may be encoding sensitive data (passwords, tokens, files) ");
+                description.append("in DNS queries to bypass firewall restrictions.");
+
+                threats.add(new ThreatAlert(
+                        "DNS_DATA_EXFILTRATION",
+                        ip,
+                        description.toString(),
+                        riskScore
+                ));
+            }
+        }
+
+        // Sort by risk score (highest first)
+        threats.sort((t1, t2) -> Integer.compare(t2.getRiskScore(), t1.getRiskScore()));
+
+        return threats;
+    }
+
+    /**
+     * Calculate Shannon entropy to detect randomness in strings
+     * Higher entropy = more random = more suspicious
+     */
+    private double calculateEntropy(String str) {
+        if (str == null || str.isEmpty()) return 0.0;
+
+        Map<Character, Integer> frequencyMap = new HashMap<>();
+        for (char c : str.toCharArray()) {
+            frequencyMap.put(c, frequencyMap.getOrDefault(c, 0) + 1);
+        }
+
+        double entropy = 0.0;
+        int length = str.length();
+
+        for (int count : frequencyMap.values()) {
+            double probability = (double) count / length;
+            entropy -= probability * (Math.log(probability) / Math.log(2));
+        }
+
+        return entropy;
+    }
+
+    /**
+     * Extract subdomain from full query name
+     * e.g., "abc123def.malicious.example.com" -> "abc123def.malicious"
+     */
+    private String extractSubdomain(String queryName) {
+        if (queryName == null || queryName.isEmpty()) return "";
+
+        // Remove trailing dot
+        if (queryName.endsWith(".")) {
+            queryName = queryName.substring(0, queryName.length() - 1);
+        }
+
+        String[] parts = queryName.split("\\.");
+
+        // If only 2 parts (example.com), no subdomain
+        if (parts.length <= 2) return "";
+
+        // Return everything except last 2 parts (base domain)
+        StringBuilder subdomain = new StringBuilder();
+        for (int i = 0; i < parts.length - 2; i++) {
+            if (i > 0) subdomain.append(".");
+            subdomain.append(parts[i]);
+        }
+
+        return subdomain.toString();
+    }
+
+    /**
+     * Check if string looks like Base64/Base32 encoded data
+     */
+    private boolean looksLikeBase64(String str) {
+        if (str == null || str.length() < BASE64_MIN_LENGTH) return false;
+
+        // Base64 uses: A-Z, a-z, 0-9, +, /, = (padding)
+        // Base32 uses: A-Z, 2-7, = (padding)
+        // Check if string is mostly these characters
+        String base64Pattern = "^[A-Za-z0-9+/=_-]+$";
+
+        if (!str.matches(base64Pattern)) return false;
+
+        // Additional check: high ratio of alphanumeric chars
+        long alphanumericCount = str.chars()
+                .filter(c -> Character.isLetterOrDigit(c))
+                .count();
+
+        double ratio = (double) alphanumericCount / str.length();
+
+        // If >90% alphanumeric and passes pattern, likely encoded
+        return ratio > 0.9;
+    }
+
+    /**
+     * Calculate risk score for data exfiltration
+     */
+    private int calculateExfiltrationRiskScore(int suspiciousSubdomainCount,
+                                              double maxEntropy,
+                                              int maxSubdomainLength,
+                                              long txtQueryCount,
+                                              long maxUniqueSubdomains) {
+        int score = 0;
+
+        // Suspicious subdomains with high entropy
+        if (suspiciousSubdomainCount > 50) score += 25;
+        else if (suspiciousSubdomainCount > 30) score += 20;
+        else if (suspiciousSubdomainCount > 10) score += 15;
+        else if (suspiciousSubdomainCount > 0) score += 10;
+
+        // Very high entropy (very random)
+        if (maxEntropy > 5.5) score += 20;
+        else if (maxEntropy > 5.0) score += 15;
+        else if (maxEntropy > 4.5) score += 10;
+
+        // Extremely long subdomains (data hiding)
+        if (maxSubdomainLength > 100) score += 15;
+        else if (maxSubdomainLength > 70) score += 10;
+        else if (maxSubdomainLength > 50) score += 5;
+
+        // TXT query abuse
+        if (txtQueryCount > 50) score += 20;
+        else if (txtQueryCount > 30) score += 15;
+        else if (txtQueryCount > 15) score += 10;
+
+        // Many unique subdomains (tunneling/fragmentation)
+        if (maxUniqueSubdomains > 100) score += 15;
+        else if (maxUniqueSubdomains > 60) score += 10;
+        else if (maxUniqueSubdomains > 40) score += 5;
 
         return Math.min(score, 100); // Cap at 100
     }

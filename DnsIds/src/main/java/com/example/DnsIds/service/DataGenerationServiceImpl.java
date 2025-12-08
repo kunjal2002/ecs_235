@@ -34,17 +34,18 @@ public class DataGenerationServiceImpl implements DataGenerationService {
         List<DnsQueryEntity> queries = new ArrayList<>();
         long timestamp = System.currentTimeMillis() / 1000;
 
-        // Calculate proportions based on original distribution (total: 450)
-        // Original: 200 normal (44.4%), 100 flooding (22.2%), 50 NXDOMAIN (11.1%), 
-        //           70 random subdomain (15.6%), 30 amplification (6.7%)
-        int normalCount = Math.max(1, (int) Math.round(queryCount * 0.444));
-        int floodingCount = Math.max(1, (int) Math.round(queryCount * 0.222));
-        int nxdomainCount = Math.max(1, (int) Math.round(queryCount * 0.111));
-        int randomSubdomainCount = Math.max(1, (int) Math.round(queryCount * 0.156));
-        int amplificationCount = Math.max(1, (int) Math.round(queryCount * 0.067));
+        // Calculate proportions for 6 attack types (total: 450 default)
+        // Distribution: 35% normal, 20% flooding, 10% NXDOMAIN, 15% random subdomain, 
+        //               10% amplification, 10% data exfiltration
+        int normalCount = Math.max(1, (int) Math.round(queryCount * 0.35));
+        int floodingCount = Math.max(1, (int) Math.round(queryCount * 0.20));
+        int nxdomainCount = Math.max(1, (int) Math.round(queryCount * 0.10));
+        int randomSubdomainCount = Math.max(1, (int) Math.round(queryCount * 0.15));
+        int amplificationCount = Math.max(1, (int) Math.round(queryCount * 0.10));
+        int exfiltrationCount = Math.max(1, (int) Math.round(queryCount * 0.10));
         
         // Adjust to match exact queryCount if there's a rounding difference
-        int currentTotal = normalCount + floodingCount + nxdomainCount + randomSubdomainCount + amplificationCount;
+        int currentTotal = normalCount + floodingCount + nxdomainCount + randomSubdomainCount + amplificationCount + exfiltrationCount;
         int difference = queryCount - currentTotal;
         if (difference != 0) {
             normalCount += difference; // Add/subtract difference to normal traffic
@@ -61,6 +62,8 @@ public class DataGenerationServiceImpl implements DataGenerationService {
             q.setResponseCode(0); // No error
             q.setAnswerCount(1);
             q.setRawLength(helper.randomSize(100, 300));
+            q.setQuerySize(helper.randomSize(40, 60)); // Normal query size
+            q.setProtocol("UDP");
             queries.add(q);
         }
 
@@ -76,6 +79,8 @@ public class DataGenerationServiceImpl implements DataGenerationService {
             q.setResponseCode(0);
             q.setAnswerCount(1);
             q.setRawLength(helper.randomSize(150, 250));
+            q.setQuerySize(helper.randomSize(45, 55));
+            q.setProtocol("UDP");
             queries.add(q);
         }
 
@@ -90,6 +95,8 @@ public class DataGenerationServiceImpl implements DataGenerationService {
             q.setResponseCode(3); // NXDOMAIN
             q.setAnswerCount(0);
             q.setRawLength(helper.randomSize(80, 120));
+            q.setQuerySize(helper.randomSize(40, 55));
+            q.setProtocol("UDP");
             queries.add(q);
         }
 
@@ -111,23 +118,69 @@ public class DataGenerationServiceImpl implements DataGenerationService {
             q.setResponseCode(0);
             q.setAnswerCount(1);
             q.setRawLength(helper.randomSize(120, 200));
+            q.setQuerySize(helper.randomSize(50, 70));
+            q.setProtocol("UDP");
             queries.add(q);
         }
 
 
-        // 5️⃣ Amplification flood: Large payloads / TCP fallback
+        // 5️⃣ Amplification flood: Large payloads / ANY queries / TCP fallback
         for (int i = 0; i < amplificationCount; i++) {
             DnsQueryEntity q = new DnsQueryEntity();
             q.setTimestamp(timestamp);
             q.setClientIp("192.168.1.250");
             q.setClientPort(helper.randomPort());
             q.setQueryName("largepayload." + helper.randomDomain());
-            q.setQueryType("TXT"); // large records
+            
+            // Mix of ANY and TXT queries for amplification
+            q.setQueryType(i % 3 == 0 ? "ANY" : "TXT"); // 33% ANY, 67% TXT
             q.setResponseCode(0);
-            q.setAnswerCount(5);
-            q.setRawLength(helper.randomSize(500, 1500)); // large packet
+            q.setAnswerCount(helper.randomInt(3, 8));
+            q.setRawLength(helper.randomSize(600, 1500)); // Large responses >512 bytes
+            q.setQuerySize(helper.randomSize(40, 60)); // Small query size for high amplification
+            
+            // Some use TCP fallback (when UDP response is too large)
+            q.setProtocol(i % 4 == 0 ? "TCP" : "UDP"); // 25% TCP, 75% UDP
             queries.add(q);
         }
+
+        // 6️⃣ DNS Data Exfiltration / Tunneling: Long subdomains, Base64 encoding, high entropy
+        String exfilDomain = "exfil-c2server.com";
+        for (int i = 0; i < exfiltrationCount; i++) {
+            DnsQueryEntity q = new DnsQueryEntity();
+            q.setTimestamp(timestamp);
+            q.setClientIp("192.168.1.220");
+            q.setClientPort(helper.randomPort());
+            
+            // Create different exfiltration patterns
+            String queryName;
+            if (i % 3 == 0) {
+                // Pattern 1: Long Base64-like encoded subdomain (simulates data encoding)
+                String encodedData = helper.randomString(helper.randomInt(55, 80)); // 55-80 chars (exceeds 50 threshold)
+                queryName = encodedData + "." + exfilDomain;
+            } else if (i % 3 == 1) {
+                // Pattern 2: Multiple fragments (simulates data fragmentation)
+                String fragment1 = helper.randomString(helper.randomInt(12, 20));
+                String fragment2 = helper.randomString(helper.randomInt(12, 20));
+                String fragment3 = helper.randomString(helper.randomInt(12, 20));
+                queryName = fragment1 + "." + fragment2 + "." + fragment3 + "." + exfilDomain;
+            } else {
+                // Pattern 3: High entropy subdomain (random-looking)
+                String highEntropySubdomain = helper.randomString(helper.randomInt(40, 65));
+                queryName = highEntropySubdomain + ".data." + exfilDomain;
+            }
+            
+            q.setQueryName(queryName);
+            // Mix of TXT (for payload) and A queries
+            q.setQueryType(i % 2 == 0 ? "TXT" : "A"); // 50% TXT queries for data exfiltration
+            q.setResponseCode(0);
+            q.setAnswerCount(i % 2 == 0 ? helper.randomInt(2, 5) : 1);
+            q.setRawLength(helper.randomSize(100, 400));
+            q.setQuerySize(helper.randomSize(60, 120)); // Larger query size due to long subdomains
+            q.setProtocol("UDP");
+            queries.add(q);
+        }
+
         List<DnsQueryEntity> savedQueries=dnsQueryRepository.saveAll(queries);
 
         String csvFilePath = "dns_flooding_dataset.csv";
