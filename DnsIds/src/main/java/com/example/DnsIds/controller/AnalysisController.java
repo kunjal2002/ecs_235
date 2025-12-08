@@ -21,7 +21,7 @@ public class AnalysisController {
 
     /**
      * Analyze DNS queries for flooding attacks
-     * Detects IPs sending more than 100 queries/second
+     * Detects IPs for various flooding types
      */
     @PostMapping("/analysis")
     public ResponseEntity<List<AttackResponse>> detectFlooding() {
