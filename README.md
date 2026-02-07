@@ -7,7 +7,7 @@
 
 ---
 
-## 📘 Overview
+## 📘 Overview : <a href="DnsIds/ECS_235_final_report.pdf" target="_blank">👉 Full Project Report</a>
 
 **DNS-IDS** is a system designed to **detect malicious DNS activity** (such as tunneling or data exfiltration) in real time by analyzing DNS traffic patterns.
 This project is part of the **ECS 235 – Computer and Information Security** course at **UC Davis**.
